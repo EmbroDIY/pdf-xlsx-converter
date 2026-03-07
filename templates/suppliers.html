@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supplier Profiles</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <main class="wide">
+        <h1>Supplier Profiles</h1>
+        <p class="subtitle">Configure how each supplier's PDF tables are extracted</p>
+
+        {% if profiles %}
+        <div class="card" style="padding: 0; overflow: hidden;">
+            <table class="profile-table">
+                <thead>
+                    <tr>
+                        <th>Supplier</th>
+                        <th>Header marker</th>
+                        <th>Columns</th>
+                        <th>OCR</th>
+                        <th style="text-align: right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in profiles %}
+                    <tr>
+                        <td style="font-weight: 500;">{{ p.name }}</td>
+                        <td><code>{{ p.header_marker }}</code></td>
+                        <td>{{ p.headers | length }}</td>
+                        <td>
+                            {% if p.ocr %}
+                            <span class="badge badge-success">Yes</span>
+                            {% else %}
+                            <span class="badge badge-default">No</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="actions" style="justify-content: flex-end;">
+                                <a href="/suppliers/{{ p.name }}/edit" class="btn btn-outline btn-sm">Edit</a>
+                                <form method="POST" action="/suppliers/{{ p.name }}/delete" style="display:inline"
+                                      onsubmit="return confirm('Delete profile for {{ p.name }}?')">
+                                    <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <p>No supplier profiles yet.</p>
+        </div>
+        {% endif %}
+
+        <div class="nav-links">
+            <a href="/suppliers/new" class="btn">Add supplier</a>
+            <a href="/">Back to converter</a>
+        </div>
+    </main>
+</body>
+</html>

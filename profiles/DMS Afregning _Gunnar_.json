@@ -1,0 +1,24 @@
+{
+  "name": "DMS Afregning (Gunnar)",
+  "headers": [
+    "Dyr nr.",
+    "Alder",
+    "Vægt",
+    "Fars race",
+    "Fars navn",
+    "Mors race",
+    "Køn",
+    "Basis pris",
+    "Vækst tillæg",
+    "JER fradr.",
+    "MON/FLE tillæg",
+    "X-kalv tillæg",
+    "Kødkv. tillæg",
+    "Indv. tillæg",
+    "Bem.",
+    "Pris"
+  ],
+  "header_marker": "Dyr nr.",
+  "stop_marker": "Bemærkning",
+  "ocr": true
+}

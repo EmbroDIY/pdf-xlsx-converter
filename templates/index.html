@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF to XLSX Converter</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <main>
+        <h1>PDF to XLSX Converter</h1>
+        <p class="subtitle">Convert supplier PDF tables into sortable spreadsheets</p>
+
+        {% if profiles %}
+        <form id="convert-form">
+            <div class="form-group">
+                <label for="supplier">Supplier</label>
+                <select id="supplier" name="supplier" required>
+                    <option value="">Select supplier...</option>
+                    {% for p in profiles %}
+                    <option value="{{ p.name }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div id="drop-zone" class="drop-zone disabled">
+                <div class="drop-zone-content">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <p id="drop-zone-label">Select a supplier first</p>
+                    <span>then drop your PDF here</span>
+                    <label class="btn btn-outline" for="file-input" style="margin-top: 0.5rem">Choose file</label>
+                    <input type="file" id="file-input" accept=".pdf" hidden disabled>
+                </div>
+            </div>
+        </form>
+
+        <div id="status" class="status hidden"></div>
+        {% else %}
+        <div class="empty-state">
+            <p>No supplier profiles configured yet.</p>
+            <a href="/suppliers/new" class="btn">Add your first supplier</a>
+        </div>
+        {% endif %}
+
+        <nav class="nav-links">
+            <a href="/suppliers">Manage suppliers</a>
+        </nav>
+    </main>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const status = document.getElementById('status');
+        const supplierSelect = document.getElementById('supplier');
+
+        if (dropZone) {
+            supplierSelect.addEventListener('change', () => {
+                const enabled = !!supplierSelect.value;
+                dropZone.classList.toggle('disabled', !enabled);
+                fileInput.disabled = !enabled;
+                document.getElementById('drop-zone-label').textContent =
+                    enabled ? 'Drag & drop a PDF here' : 'Select a supplier first';
+                dropZone.querySelector('span').textContent =
+                    enabled ? 'or click to browse' : 'then drop your PDF here';
+            });
+
+            ['dragenter', 'dragover'].forEach(evt =>
+                dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.add('drag-over'); })
+            );
+            ['dragleave', 'drop'].forEach(evt =>
+                dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.remove('drag-over'); })
+            );
+
+            dropZone.addEventListener('drop', e => {
+                const file = e.dataTransfer.files[0];
+                if (file) upload(file);
+            });
+
+            fileInput.addEventListener('change', () => {
+                if (fileInput.files[0]) upload(fileInput.files[0]);
+            });
+        }
+
+        async function upload(file) {
+            if (!file.name.toLowerCase().endsWith('.pdf')) {
+                showStatus('Please select a PDF file.', 'error');
+                return;
+            }
+            if (!supplierSelect.value) {
+                showStatus('Please select a supplier first.', 'error');
+                return;
+            }
+
+            showStatus('Converting... please wait.', 'info');
+            dropZone.classList.add('disabled');
+
+            const form = new FormData();
+            form.append('file', file);
+            form.append('supplier', supplierSelect.value);
+
+            try {
+                const res = await fetch('/convert', { method: 'POST', body: form });
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(text || 'Conversion failed');
+                }
+
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = file.name.replace(/\.pdf$/i, '.xlsx');
+                a.click();
+                URL.revokeObjectURL(url);
+
+                showStatus('Done! Your XLSX file has been downloaded.', 'success');
+            } catch (err) {
+                showStatus('Error: ' + err.message, 'error');
+            } finally {
+                dropZone.classList.remove('disabled');
+                fileInput.value = '';
+            }
+        }
+
+        function showStatus(msg, type) {
+            status.textContent = msg;
+            status.className = 'status ' + type;
+        }
+    </script>
+</body>
+</html>

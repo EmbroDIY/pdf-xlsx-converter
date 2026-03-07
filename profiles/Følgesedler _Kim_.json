@@ -1,0 +1,18 @@
+{
+  "name": "Følgesedler (Kim)",
+  "headers": [
+    "Dyrnr.",
+    "Til bes.",
+    "Fødselsdato",
+    "Alder (dage)",
+    "Race",
+    "Far race",
+    "Mor race",
+    "Køn",
+    "Vækstindeks",
+    "Vægt (kg)"
+  ],
+  "header_marker": "Dyrnr.",
+  "stop_marker": "Bemærkning",
+  "ocr": false
+}
