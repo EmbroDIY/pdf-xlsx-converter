@@ -1,31 +1,36 @@
 # PDF to XLSX Converter
 
-Convert supplier PDF tables into sortable XLSX spreadsheets. Runs locally on your computer — no cloud services or AI needed.
+Convert supplier PDF tables into sortable XLSX spreadsheets. Uses a local AI vision model (Ollama) to read tables from any PDF — scanned or digital.
 
 ## Windows Setup (one-time)
 
-1. **Install Python 3.13+** — download from https://python.org
+1. **Install Ollama** — download from https://ollama.com and run the installer
+2. **Install Python 3.13+** — download from https://python.org
    During installation, check **"Add Python to PATH"**
-2. **Install uv** — open Command Prompt and run:
+3. **Install uv** — open Command Prompt and run:
    ```
    pip install uv
    ```
-3. **Download this project** — unzip the folder somewhere (e.g. Desktop)
+4. **Download this project** — unzip the folder somewhere (e.g. Desktop)
+
+The app connects to Ollama for AI-powered table extraction.
 
 After that, just double-click **`start.bat`** to run the app. A browser window will open automatically.
 
 ## Usage
 
 1. Double-click **`start.bat`** — the app opens in your browser
-2. Select a supplier from the dropdown
-3. Drag & drop the PDF (or click to browse)
-4. The XLSX file downloads automatically
+2. Check the green status bar says "Ollama is running and ready"
+3. Select a supplier from the dropdown
+4. Drag & drop the PDF (or click to browse)
+5. Wait for the conversion (may take up to a minute per page)
+6. The XLSX file downloads automatically
 
 To stop the app, close the black terminal window.
 
 ## Managing Supplier Profiles
 
-Each supplier's PDF has a different table layout. A **profile** tells the converter where to find the data.
+Each supplier's PDF has a different table layout. A **profile** tells the converter what columns to look for.
 
 Click **"Manage suppliers"** in the app to create or edit profiles.
 
@@ -34,31 +39,16 @@ Click **"Manage suppliers"** in the app to create or edit profiles.
 Open one of the supplier's PDFs and look at the table:
 
 1. **Supplier name** — the supplier's name (e.g. "Gunnar V. Jorgensen")
-2. **Header marker** — a word from the table's header row (e.g. `Dyrnr.`). The converter starts reading data from the line after this text.
+2. **Header marker** — a word from the table's header row (e.g. `Dyrnr.`). The AI uses this to know where the table starts.
 3. **Stop marker** — text that appears right after the table ends (e.g. `Bemærkning`). Leave empty to read until end of page.
-4. **Column headers** — list each column name on its own line, in the same order as the PDF. The number of columns tells the converter how to split each row.
-5. **OCR** — check this only if the PDF is a scanned image (not normal text)
+4. **Column headers** — list each column name on its own line, in the same order as the PDF.
 
-## OCR Setup (optional — for scanned PDFs)
+## System Requirements
 
-Only needed if a supplier sends scanned image PDFs instead of normal text PDFs.
-
-### Windows
-
-1. Download and install Tesseract from https://github.com/UB-Mannheim/tesseract/wiki
-2. During installation, select **Danish** in the language list
-3. Make sure "Add to PATH" is checked
-4. Run in Command Prompt:
-   ```
-   uv sync --extra ocr
-   ```
-
-### Linux / WSL
-
-```bash
-sudo apt install tesseract-ocr tesseract-ocr-dan
-uv sync --extra ocr
-```
+- **Windows 10/11** (also works on macOS/Linux)
+- **8 GB RAM minimum** (16 GB recommended)
+- **~5 GB disk space** for the AI model
+- A GPU is helpful but not required — the model runs on CPU too (just slower)
 
 ## Developer Notes
 
@@ -66,9 +56,10 @@ uv sync --extra ocr
 # Install dependencies
 uv sync
 
-# Run the server
+# Run the server (Ollama must be running separately)
 uv run python main.py
 # Opens at http://localhost:8000
-```
 
-No tests or linting configured.
+# Override the default model via environment variable
+OLLAMA_MODEL=some-model uv run python main.py
+```

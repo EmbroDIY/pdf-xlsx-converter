@@ -1,44 +1,176 @@
-"""PDF to XLSX converter using supplier profiles.
+"""PDF to XLSX converter using Ollama vision models.
 
-The profile defines:
-- header_marker: text that appears on the line where table data starts
-- headers: the column names to use in the XLSX
-- stop_marker: text that signals end of table (optional)
-- ocr: whether to use OCR for scanned PDFs
+Renders each PDF page as an image, sends it to a local Ollama vision model
+with a structured prompt describing the expected columns, and parses the
+model's JSON response into spreadsheet rows.
 """
 
+import base64
+import io
+import json
+import os
+import re
 from pathlib import Path
 
+import httpx
 import pdfplumber
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
 from profiles import SupplierProfile
 
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-vl:235b-cloud")
 
-def _configure_tesseract(pytesseract) -> None:
-    """Find tesseract binary on Windows if not already in PATH."""
-    import shutil
-    import sys
 
-    if sys.platform != "win32" or shutil.which("tesseract"):
-        return
+def _render_page_to_base64(page, resolution: int = 150) -> str:
+    """Render a pdfplumber page to a base64-encoded PNG string."""
+    img = page.to_image(resolution=resolution).original
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    from pathlib import Path as P
-    common_paths = [
-        P(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
-        P(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
-    ]
-    for p in common_paths:
-        if p.exists():
-            pytesseract.pytesseract.tesseract_cmd = str(p)
-            return
 
-    raise FileNotFoundError(
-        "Tesseract not found. Install it from "
-        "https://github.com/UB-Mannheim/tesseract/wiki "
-        "or add it to your PATH."
-    )
+def _build_prompt(profile: SupplierProfile) -> str:
+    """Build the extraction prompt for the vision model."""
+    cols = " | ".join(profile.headers)
+    num = len(profile.headers)
+
+    prompt = f"""Extract the tabular data from this document image.
+
+The table has {num} columns with these headers (in order):
+{cols}
+
+Rules:
+- The table starts after the line containing "{profile.header_marker}".
+"""
+    if profile.stop_marker:
+        prompt += f'- The table ends at the line containing "{profile.stop_marker}".\n'
+
+    prompt += """- Return ONLY a JSON array of arrays. Each inner array is one row with exactly {num} string values.
+- Preserve the exact order of columns.
+- If a cell is empty, use an empty string "".
+- Do NOT include the header row itself in the output.
+- Do NOT include any text outside the JSON array.
+- Numbers should be kept as strings exactly as they appear (e.g. "1.234,56" not "1234.56").
+""".format(num=num)
+
+    return prompt
+
+
+def _extract_json_array(text: str) -> list[list[str]]:
+    """Parse JSON array of arrays from model response, handling markdown fences."""
+    text = text.strip()
+    # Strip markdown code fences if present
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # Try to find the first [ ... ] block
+        bracket_match = re.search(r"\[.*\]", text, re.DOTALL)
+        if bracket_match:
+            data = json.loads(bracket_match.group(0))
+        else:
+            return []
+
+    if not isinstance(data, list):
+        return []
+
+    rows = []
+    for item in data:
+        if isinstance(item, list):
+            rows.append([str(v) if v is not None else "" for v in item])
+    return rows
+
+
+def _call_ollama(image_b64: str, prompt: str, model: str) -> str:
+    """Call Ollama vision API with an image and prompt."""
+    with httpx.Client(timeout=600.0) as client:
+        resp = client.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                        "images": [image_b64],
+                    }
+                ],
+                "stream": False,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+
+
+def check_ollama_available(model: str = DEFAULT_MODEL) -> tuple[bool, str]:
+    """Check if Ollama is running and the model is accessible.
+
+    Returns (ok, message) tuple.
+    """
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            # First check Ollama is reachable
+            resp = client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            resp.raise_for_status()
+
+            # Try a lightweight call to verify the model works
+            # (cloud models won't appear in local tags list)
+            resp = client.post(
+                f"{OLLAMA_BASE_URL}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                },
+                timeout=30.0,
+            )
+            if resp.status_code == 404:
+                return False, (
+                    f"Model '{model}' not found. "
+                    f"Run: ollama pull {model}"
+                )
+            resp.raise_for_status()
+            return True, f"OK — using {model}"
+    except httpx.ConnectError:
+        return False, (
+            "Cannot connect to Ollama. "
+            "Make sure Ollama is running (https://ollama.com)"
+        )
+    except Exception as e:
+        return False, f"Ollama check failed: {e}"
+
+
+def extract_rows_vision(
+    pdf_path: str | Path,
+    profile: SupplierProfile,
+    model: str = DEFAULT_MODEL,
+) -> list[list[str]]:
+    """Extract table rows from PDF using Ollama vision model."""
+    pdf_path = Path(pdf_path)
+    prompt = _build_prompt(profile)
+    num_cols = len(profile.headers)
+    all_rows: list[list[str]] = []
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            image_b64 = _render_page_to_base64(page)
+            response = _call_ollama(image_b64, prompt, model)
+            rows = _extract_json_array(response)
+
+            for row in rows:
+                # Pad or trim to expected column count
+                if len(row) < num_cols:
+                    row.extend([""] * (num_cols - len(row)))
+                elif len(row) > num_cols:
+                    row = row[:num_cols]
+                all_rows.append(row)
+
+    return all_rows
 
 
 def write_xlsx(
@@ -98,250 +230,14 @@ def _maybe_number(value: str):
     return value
 
 
-def extract_rows_spatial(pdf_path: str | Path, profile: SupplierProfile) -> list[list[str]]:
-    """Extract data rows from a text-based PDF using pdfplumber word positions.
-
-    Uses the same spatial column-boundary approach as OCR extraction,
-    but reads word positions directly from the PDF (no Tesseract needed).
-    """
-    all_rows: list[list[str]] = []
-    num_cols = len(profile.headers)
-
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            pdf_words = page.extract_words()
-            if not pdf_words:
-                continue
-
-            # Convert to (left, top, width, height, text) tuples
-            words = [
-                (w["x0"], w["top"], w["x1"] - w["x0"], w["bottom"] - w["top"], w["text"])
-                for w in pdf_words
-            ]
-            lines = _group_words_into_lines(words)
-
-            in_table = False
-            col_bounds = None
-
-            for i, line_words in enumerate(lines):
-                line_text = " ".join(w[4] for w in line_words)
-
-                if not in_table:
-                    if profile.header_marker in line_text:
-                        in_table = True
-                        col_bounds = _col_boundaries_from_header(line_words, num_cols)
-                    continue
-
-                if profile.stop_marker and profile.stop_marker in line_text:
-                    in_table = False
-                    continue
-
-                if col_bounds is None:
-                    continue
-
-                row = _words_to_cells(line_words, col_bounds)
-                if _is_data_row(row, num_cols):
-                    all_rows.append(row)
-
-    return all_rows
-
-
-def extract_rows_ocr(pdf_path: str | Path, profile: SupplierProfile) -> list[list[str]]:
-    """Extract data rows from scanned PDF using OCR with spatial word positions.
-
-    Instead of splitting plain text on whitespace (which loses column structure),
-    this uses pytesseract's image_to_data to get word bounding boxes and assigns
-    each word to the correct column based on x-coordinate.
-    """
-    try:
-        import pytesseract
-    except ImportError:
-        raise RuntimeError("pytesseract is not installed. Run: uv sync --extra ocr")
-
-    _configure_tesseract(pytesseract)
-
-    all_rows: list[list[str]] = []
-    num_cols = len(profile.headers)
-
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            img = page.to_image(resolution=400).original
-            data = pytesseract.image_to_data(
-                img, lang="dan", config="--psm 6",
-                output_type=pytesseract.Output.DICT,
-            )
-
-            words = _parse_ocr_words(data)
-            lines = _group_words_into_lines(words)
-
-            in_table = False
-            col_bounds = None
-            pending: list[tuple] = []
-
-            for i, line_words in enumerate(lines):
-                line_text = " ".join(w[4] for w in line_words)
-
-                if not in_table:
-                    if profile.header_marker in line_text:
-                        in_table = True
-                        # Combine with the line above (upper part of two-line header)
-                        # for better column position detection
-                        combined = line_words
-                        if i > 0:
-                            combined = sorted(
-                                lines[i - 1] + line_words, key=lambda w: w[0]
-                            )
-                        col_bounds = _col_boundaries_from_header(combined, num_cols)
-                    continue
-
-                if profile.stop_marker and profile.stop_marker in line_text:
-                    if pending and col_bounds:
-                        row = _words_to_cells(pending, col_bounds)
-                        if _is_data_row(row, num_cols):
-                            all_rows.append(row)
-                    pending = []
-                    in_table = False
-                    continue
-
-                if col_bounds is None:
-                    continue
-
-                # Orphan line (1-3 words): merge with pending row
-                if len(line_words) <= 3 and pending:
-                    pending.extend(line_words)
-                    continue
-
-                # Flush pending row
-                if pending:
-                    row = _words_to_cells(pending, col_bounds)
-                    if _is_data_row(row, num_cols):
-                        all_rows.append(row)
-
-                pending = list(line_words)
-
-            # Flush at end of page
-            if pending and col_bounds:
-                row = _words_to_cells(pending, col_bounds)
-                if _is_data_row(row, num_cols):
-                    all_rows.append(row)
-
-    return all_rows
-
-
-def _parse_ocr_words(data: dict) -> list[tuple]:
-    """Parse pytesseract image_to_data dict into (left, top, width, height, text) tuples."""
-    words = []
-    for i in range(len(data["text"])):
-        text = str(data["text"][i]).strip()
-        conf = int(data["conf"][i])
-        if conf <= 0 or not text:
-            continue
-        words.append((
-            int(data["left"][i]),
-            int(data["top"][i]),
-            int(data["width"][i]),
-            int(data["height"][i]),
-            text,
-        ))
-    return words
-
-
-def _group_words_into_lines(words: list[tuple]) -> list[list[tuple]]:
-    """Group word tuples into lines by y-coordinate proximity."""
-    if not words:
-        return []
-
-    sorted_words = sorted(words, key=lambda w: (w[1], w[0]))
-    avg_height = sum(w[3] for w in sorted_words) / len(sorted_words)
-    tolerance = avg_height * 0.5
-
-    lines: list[list[tuple]] = []
-    current = [sorted_words[0]]
-
-    for w in sorted_words[1:]:
-        if abs(w[1] - current[0][1]) <= tolerance:
-            current.append(w)
-        else:
-            lines.append(sorted(current, key=lambda w: w[0]))
-            current = [w]
-
-    if current:
-        lines.append(sorted(current, key=lambda w: w[0]))
-
-    return lines
-
-
-def _col_boundaries_from_header(words: list[tuple], num_cols: int) -> list[float] | None:
-    """Determine column boundary x-positions from header line words.
-
-    Groups header words into num_cols clusters by iteratively merging the
-    adjacent pair that produces the smallest combined span (total width).
-    Returns num_cols-1 boundary positions (left edge of each group except first).
-    """
-    if len(words) < num_cols:
-        return None
-
-    # Start with each word as its own group
-    groups: list[list[tuple]] = [[w] for w in words]
-
-    while len(groups) > num_cols:
-        # Find adjacent pair whose merge produces the smallest total span
-        best_idx = 0
-        best_span = float("inf")
-        for i in range(len(groups) - 1):
-            left = groups[i][0][0]
-            right_w = groups[i + 1][-1]
-            span = right_w[0] + right_w[2] - left
-            if span < best_span:
-                best_span = span
-                best_idx = i
-
-        groups[best_idx] = groups[best_idx] + groups[best_idx + 1]
-        del groups[best_idx + 1]
-
-    # Boundary between col i and col i+1 is the left edge of group i+1
-    boundaries = []
-    for i in range(1, len(groups)):
-        boundaries.append(float(groups[i][0][0]))
-
-    return boundaries
-
-
-def _words_to_cells(words: list[tuple], col_boundaries: list[float]) -> list[str]:
-    """Assign words to columns based on boundary positions."""
-    num_cols = len(col_boundaries) + 1
-    cells: list[list[str]] = [[] for _ in range(num_cols)]
-
-    for w in sorted(words, key=lambda w: w[0]):
-        x_center = w[0] + w[2] / 2
-        col = num_cols - 1
-        for i, boundary in enumerate(col_boundaries):
-            if x_center < boundary:
-                col = i
-                break
-        cells[col].append(w[4])
-
-    return [" ".join(parts) for parts in cells]
-
-
-def _is_data_row(row: list[str], num_cols: int) -> bool:
-    """Check if a row looks like actual data (not noise)."""
-    non_empty = sum(1 for cell in row if cell.strip())
-    return non_empty >= max(3, num_cols // 3)
-
-
 def convert_pdf_to_xlsx(
     pdf_path: str | Path,
     output_path: str | Path,
     profile: SupplierProfile,
 ) -> Path:
-    """Main entry point: convert a PDF to XLSX using a supplier profile."""
+    """Main entry point: convert a PDF to XLSX using Ollama vision model."""
     pdf_path = Path(pdf_path)
     output_path = Path(output_path)
 
-    if profile.ocr:
-        rows = extract_rows_ocr(pdf_path, profile)
-    else:
-        rows = extract_rows_spatial(pdf_path, profile)
-
+    rows = extract_rows_vision(pdf_path, profile)
     return write_xlsx(profile.headers, rows, output_path)

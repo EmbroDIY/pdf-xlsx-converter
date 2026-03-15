@@ -19,7 +19,6 @@
                         <th>Supplier</th>
                         <th>Header marker</th>
                         <th>Columns</th>
-                        <th>OCR</th>
                         <th style="text-align: right;">Actions</th>
                     </tr>
                 </thead>
@@ -29,13 +28,6 @@
                         <td style="font-weight: 500;">{{ p.name }}</td>
                         <td><code>{{ p.header_marker }}</code></td>
                         <td>{{ p.headers | length }}</td>
-                        <td>
-                            {% if p.ocr %}
-                            <span class="badge badge-success">Yes</span>
-                            {% else %}
-                            <span class="badge badge-default">No</span>
-                            {% endif %}
-                        </td>
                         <td>
                             <div class="actions" style="justify-content: flex-end;">
                                 <a href="/suppliers/{{ p.name }}/edit" class="btn btn-outline btn-sm">Edit</a>

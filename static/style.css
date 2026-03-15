@@ -141,22 +141,6 @@ h1 {
     font-weight: 400;
 }
 
-.checkbox-group label {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-weight: 400;
-    cursor: pointer;
-    font-size: 0.875rem;
-}
-
-.checkbox-group input[type="checkbox"] {
-    width: 1rem;
-    height: 1rem;
-    accent-color: var(--primary);
-    cursor: pointer;
-}
-
 .form-actions {
     display: flex;
     gap: 0.5rem;
@@ -392,23 +376,3 @@ h1 {
     margin: 1.5rem 0;
 }
 
-/* Badge */
-.badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.125rem 0.5rem;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    line-height: 1.25rem;
-}
-
-.badge-default {
-    background: var(--secondary);
-    color: var(--secondary-foreground);
-}
-
-.badge-success {
-    background: var(--success-bg);
-    color: var(--success);
-}

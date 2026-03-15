@@ -33,6 +33,15 @@ wheels = [
 ]
 
 [[package]]
+name = "certifi"
+version = "2026.2.25"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/2d/7bf41579a8986e348fa033a31cdd0e4121114f6bce2457e8876010b092dd/certifi-2026.2.25.tar.gz", hash = "sha256:e887ab5cee78ea814d3472169153c2d12cd43b14bd03329a39a9c6e2e80bfba7", size = 155029, upload-time = "2026-02-25T02:54:17.342Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/3c/c17fb3ca2d9c3acff52e30b309f538586f9f5b9c9cf454f3845fc9af4881/certifi-2026.2.25-py3-none-any.whl", hash = "sha256:027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa", size = 153684, upload-time = "2026-02-25T02:54:15.766Z" },
+]
+
+[[package]]
 name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -227,6 +236,34 @@ wheels = [
 ]
 
 [[package]]
+name = "httpcore"
+version = "1.0.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "h11" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/06/94/82699a10bca87a5556c9c59b5963f2d039dbd239f25bc2a63907a05a14cb/httpcore-1.0.9.tar.gz", hash = "sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8", size = 85484, upload-time = "2025-04-24T22:06:22.219Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl", hash = "sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55", size = 78784, upload-time = "2025-04-24T22:06:20.566Z" },
+]
+
+[[package]]
+name = "httpx"
+version = "0.28.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "certifi" },
+    { name = "httpcore" },
+    { name = "idna" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc", size = 141406, upload-time = "2024-12-06T15:37:23.222Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad", size = 73517, upload-time = "2024-12-06T15:37:21.509Z" },
+]
+
+[[package]]
 name = "idna"
 version = "3.11"
 source = { registry = "https://pypi.org/simple" }
@@ -312,20 +349,12 @@ wheels = [
 ]
 
 [[package]]
-name = "packaging"
-version = "26.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d2cf530f3accf79c4fca01e96ffc950d8a52213bd8e4/packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4", size = 143416, upload-time = "2026-01-21T20:50:39.064Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
-]
-
-[[package]]
 name = "pdf-xlsx-converter"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "jinja2" },
     { name = "openpyxl" },
     { name = "pdfplumber" },
@@ -333,24 +362,16 @@ dependencies = [
     { name = "uvicorn" },
 ]
 
-[package.optional-dependencies]
-ocr = [
-    { name = "pillow" },
-    { name = "pytesseract" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pdfplumber", specifier = ">=0.11" },
-    { name = "pillow", marker = "extra == 'ocr'", specifier = ">=10.0" },
-    { name = "pytesseract", marker = "extra == 'ocr'", specifier = ">=0.3" },
     { name = "python-multipart", specifier = ">=0.0.18" },
     { name = "uvicorn", specifier = ">=0.34" },
 ]
-provides-extras = ["ocr"]
 
 [[package]]
 name = "pdfminer-six"
@@ -541,19 +562,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ac/38/f77e7792b4fba37f0e3d78db52fb7288d41db3c46ed28906fb940bc3e325/pypdfium2-5.5.0-py3-none-win32.whl", hash = "sha256:ec62a00223d1222d2f35c0866dd79cdc24da070738544cdf51b17d332d4a7389", size = 3001772, upload-time = "2026-02-18T23:22:32.367Z" },
     { url = "https://files.pythonhosted.org/packages/3e/c5/0d7ba53148262f78d8eee528a504764f78ae7bebf434a53714294b1fd973/pypdfium2-5.5.0-py3-none-win_amd64.whl", hash = "sha256:15c32fbeebb5198afa785dd03e98906ebb4eded9ef8862e10f833c37b4a18786", size = 3107710, upload-time = "2026-02-18T23:22:33.925Z" },
     { url = "https://files.pythonhosted.org/packages/29/ad/fae449d2ed7b3088c6ab088f53fc6a9e9af26ccc9e0477d4182e373c4dd8/pypdfium2-5.5.0-py3-none-win_arm64.whl", hash = "sha256:f618af0884c16c768539c44933a255039131dbbf39d68eded020da4f14958d73", size = 2938315, upload-time = "2026-02-18T23:22:35.907Z" },
-]
-
-[[package]]
-name = "pytesseract"
-version = "0.3.13"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "packaging" },
-    { name = "pillow" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9f/a6/7d679b83c285974a7cb94d739b461fa7e7a9b17a3abfd7bf6cbc5c2394b0/pytesseract-0.3.13.tar.gz", hash = "sha256:4bf5f880c99406f52a3cfc2633e42d9dc67615e69d8a509d74867d3baddb5db9", size = 17689, upload-time = "2024-08-16T02:33:56.762Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/33/8312d7ce74670c9d39a532b2c246a853861120486be9443eebf048043637/pytesseract-0.3.13-py3-none-any.whl", hash = "sha256:7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77fdcac094a3589d4b34", size = 14705, upload-time = "2024-08-16T02:36:10.09Z" },
 ]
 
 [[package]]

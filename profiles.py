@@ -4,11 +4,10 @@ Each supplier profile defines how to extract table data from their PDFs:
 - headers: list of column names (in order)
 - header_marker: text that marks the start of the table data
 - stop_marker: text that marks the end of the table data (optional)
-- ocr: whether the PDF needs OCR (scanned documents)
 """
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 PROFILES_DIR = Path(__file__).parent / "profiles"
@@ -20,7 +19,6 @@ class SupplierProfile:
     headers: list[str]
     header_marker: str
     stop_marker: str = ""
-    ocr: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -32,7 +30,6 @@ class SupplierProfile:
             headers=data["headers"],
             header_marker=data["header_marker"],
             stop_marker=data.get("stop_marker", ""),
-            ocr=data.get("ocr", False),
         )
 
 

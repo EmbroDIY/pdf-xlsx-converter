@@ -43,14 +43,6 @@
                     The number of headers determines how many columns the converter expects per row.</small>
             </div>
 
-            <div class="form-group checkbox-group">
-                <label>
-                    <input type="checkbox" name="ocr" {{ "checked" if profile and profile.ocr else "" }}>
-                    This supplier's PDFs are scanned images (use OCR)
-                </label>
-                <small>Enable this if the PDF is a scanned document. Requires tesseract-ocr to be installed.</small>
-            </div>
-
             <div class="form-actions">
                 <button type="submit" class="btn">Save profile</button>
                 <a href="/suppliers" class="btn btn-secondary">Cancel</a>
