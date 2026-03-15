@@ -18,3 +18,7 @@ node_modules/
 .claude/
 .env
 .envrc
+
+# Coding agents
+.claude/
+.mcp.json

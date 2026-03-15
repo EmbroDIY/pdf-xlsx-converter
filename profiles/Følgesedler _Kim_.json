@@ -13,6 +13,5 @@
     "Vægt (kg)"
   ],
   "header_marker": "Dyrnr.",
-  "stop_marker": "Bemærkning",
-  "ocr": false
+  "stop_marker": "Bemærkning"
 }

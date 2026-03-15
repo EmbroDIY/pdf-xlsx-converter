@@ -11,6 +11,10 @@
         <h1>PDF to XLSX Converter</h1>
         <p class="subtitle">Convert supplier PDF tables into sortable spreadsheets</p>
 
+        <div id="ollama-status" class="status info" style="margin-bottom: 1rem;">
+            Checking Ollama connection...
+        </div>
+
         {% if profiles %}
         <form id="convert-form">
             <div class="form-group">
@@ -57,6 +61,26 @@
         const status = document.getElementById('status');
         const supplierSelect = document.getElementById('supplier');
 
+        // Check Ollama status on load
+        (async function checkOllama() {
+            const el = document.getElementById('ollama-status');
+            try {
+                const res = await fetch('/health/ollama');
+                const data = await res.json();
+                if (data.ok) {
+                    el.className = 'status success';
+                    el.textContent = 'Ollama is running and ready';
+                    setTimeout(() => el.style.display = 'none', 3000);
+                } else {
+                    el.className = 'status error';
+                    el.textContent = data.message;
+                }
+            } catch {
+                el.className = 'status error';
+                el.textContent = 'Cannot reach the server';
+            }
+        })();
+
         if (dropZone) {
             supplierSelect.addEventListener('change', () => {
                 const enabled = !!supplierSelect.value;
@@ -95,7 +119,7 @@
                 return;
             }
 
-            showStatus('Converting... please wait.', 'info');
+            showStatus('Converting... this may take a minute per page.', 'info');
             dropZone.classList.add('disabled');
 
             const form = new FormData();

@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
-from converter import convert_pdf_to_xlsx
+from converter import check_ollama_available, convert_pdf_to_xlsx
 from profiles import SupplierProfile, delete_profile, list_profiles, load_profile, save_profile
 
 app = FastAPI(title="PDF to XLSX Converter")
@@ -28,6 +28,13 @@ async def index(request: Request):
     return templates.TemplateResponse(request, "index.html", {"profiles": profiles})
 
 
+@app.get("/health/ollama")
+async def ollama_health():
+    """Check if Ollama is running and the vision model is available."""
+    ok, message = check_ollama_available()
+    return {"ok": ok, "message": message}
+
+
 @app.post("/convert")
 async def convert(
     file: UploadFile = File(...),
@@ -39,6 +46,11 @@ async def convert(
     profile = load_profile(supplier)
     if not profile:
         return HTMLResponse(f"Supplier profile '{supplier}' not found.", status_code=400)
+
+    # Check Ollama before starting conversion
+    ok, message = check_ollama_available()
+    if not ok:
+        return HTMLResponse(f"Ollama error: {message}", status_code=503)
 
     xlsx_filename = Path(file.filename).stem + ".xlsx"
 
@@ -88,7 +100,6 @@ async def save_supplier(
     headers: str = Form(...),
     header_marker: str = Form(...),
     stop_marker: str = Form(""),
-    ocr: str = Form("off"),
 ):
     header_list = [h.strip() for h in headers.split("\n") if h.strip()]
     if not header_list:
@@ -99,7 +110,6 @@ async def save_supplier(
         headers=header_list,
         header_marker=header_marker.strip(),
         stop_marker=stop_marker.strip(),
-        ocr=ocr == "on",
     )
     save_profile(profile)
     return RedirectResponse("/suppliers", status_code=303)
