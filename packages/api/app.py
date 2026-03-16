@@ -190,7 +190,7 @@ async def _list_gemini_models() -> list[dict]:
 
 
 @app.get("/api/models")
-async def list_models():
+async def list_models(user: dict = Depends(get_current_user)):
     """List available models from all connected providers."""
     ollama_models = await _list_ollama_models()
     gemini_models = await _list_gemini_models()
