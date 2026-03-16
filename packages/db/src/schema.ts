@@ -49,6 +49,10 @@ export const agentTaskRuns = pgTable("agent_task_runs", {
   rowCount: integer("row_count"),
   pageCount: integer("page_count"),
   errorMessage: text("error_message"),
+  pdfUrl: text("pdf_url"),
+  fileUrl: text("file_url"),
+  progressPct: integer("progress_pct").default(0),
+  progressMessage: text("progress_message"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
 });

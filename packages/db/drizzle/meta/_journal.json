@@ -8,6 +8,20 @@
       "when": 1773616058740,
       "tag": "0000_left_lockheed",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1773622929271,
+      "tag": "0001_sparkling_talos",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1773624810782,
+      "tag": "0002_powerful_cobalt_man",
+      "breakpoints": true
     }
   ]
 }

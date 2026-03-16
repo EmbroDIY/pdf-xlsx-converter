@@ -9,6 +9,7 @@ import {
   History,
   Settings,
   LogOut,
+  Coffee,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -70,6 +71,21 @@ export default function DashboardLayout({
         </nav>
         <Separator />
         <div className="p-3 space-y-2">
+          {process.env.NEXT_PUBLIC_BUY_ME_A_COFFEE_LINK && (
+            <a
+              href={process.env.NEXT_PUBLIC_BUY_ME_A_COFFEE_LINK}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <Button
+                variant="ghost"
+                className="w-full justify-start text-amber-600 hover:text-amber-700"
+              >
+                <Coffee className="mr-2 h-4 w-4" />
+                Buy me a coffee
+              </Button>
+            </a>
+          )}
           <p className="truncate px-3 text-sm text-muted-foreground">
             {user?.email}
           </p>

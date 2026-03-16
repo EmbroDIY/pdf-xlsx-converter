@@ -1,0 +1,1 @@
+ALTER TABLE "agent_task_runs" ADD COLUMN "pdf_url" text;

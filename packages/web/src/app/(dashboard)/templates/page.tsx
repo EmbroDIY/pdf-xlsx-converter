@@ -99,7 +99,7 @@ export default function TemplatesPage() {
                 <TableCell>{t.headers.length}</TableCell>
                 <TableCell>
                   <div className="flex gap-1">
-                    <Link href={`/templates/${t.id}/edit`}>
+                    <Link href={`/templates/edit?id=${t.id}`}>
                       <Button variant="ghost" size="sm">
                         <Pencil className="h-4 w-4" />
                       </Button>

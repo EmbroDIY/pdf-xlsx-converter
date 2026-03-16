@@ -1,11 +1,12 @@
 """FastAPI backend for PDF table extraction — pure JSON API."""
 
+import asyncio
 import json
+import logging
 import os
 import re
 import sys
 import tempfile
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,10 +15,11 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.requests import Request
-from sse_starlette.sse import EventSourceResponse
 from supabase import create_client
 
 from auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 # Add the agent package to the path
 PACKAGES_DIR = Path(__file__).parent.parent
@@ -25,15 +27,39 @@ sys.path.insert(0, str(PACKAGES_DIR / "agent"))
 
 app = FastAPI(title="PDF Table Extractor API")
 
-# CORS — allow the Next.js frontend
+# CORS — allow the Next.js frontend (local + deployed)
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+_origins = [FRONTEND_URL, "http://localhost:3000"]
+# Also allow any Netlify deploy previews
+_origins = [o for o in _origins if o] + [
+    o for o in os.environ.get("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://localhost:3000"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def _mark_stale_runs():
+    """Mark any runs stuck in processing/pending as failed after server restart."""
+    try:
+        sb = get_supabase()
+        for status in ("processing", "pending"):
+            sb.table("agent_task_runs").update(
+                {
+                    "status": "failed",
+                    "error_message": "Server restarted during processing. Use Retry to rerun.",
+                    "progress_message": "Failed — server restarted",
+                }
+            ).eq("status", status).execute()
+        logger.info("Marked stale runs as failed")
+    except Exception:
+        logger.exception("Failed to clean up stale runs on startup")
+
 
 # Supabase client (service role for server-side queries)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -42,10 +68,6 @@ SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY", "")
 
 def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-
-
-# Store completed XLSX files for async download
-_results: dict[str, Path] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -296,8 +318,134 @@ async def delete_template(
 
 
 # ---------------------------------------------------------------------------
-# Convert
+# Convert — background task with DB progress updates
 # ---------------------------------------------------------------------------
+
+
+async def _run_extraction(
+    run_id: str,
+    org_id: str,
+    pdf_storage_path: str,
+    pdf_filename: str,
+    xlsx_filename: str,
+    template: dict,
+    user_provider: str | None,
+    user_model: str | None,
+):
+    """Background extraction task. Downloads PDF from Storage, processes it,
+    uploads XLSX result. Updates agent_task_runs in DB for Realtime."""
+    sb = get_supabase()
+
+    def _update_progress(pct: int, message: str, **extra):
+        data = {
+            "progress_pct": pct,
+            "progress_message": message,
+            **extra,
+        }
+        sb.table("agent_task_runs").update(data).eq("id", run_id).execute()
+
+    try:
+        _update_progress(0, "Starting extraction...", status="processing")
+
+        from table_extractor.prompt import build_extraction_prompt
+        from table_extractor.tools import (
+            _call_vision_model,
+            _extract_json_array,
+            _render_page_to_base64,
+            _write_xlsx,
+        )
+
+        import pdfplumber
+
+        # Download PDF from Supabase Storage
+        pdf_bytes = sb.storage.from_("results").download(pdf_storage_path)
+
+        tmp_dir = Path(tempfile.mkdtemp())
+        pdf_path = tmp_dir / pdf_filename
+        xlsx_path = tmp_dir / xlsx_filename
+        pdf_path.write_bytes(pdf_bytes)
+
+        headers_list = template["headers"]
+        prompt = build_extraction_prompt(
+            headers_list, template["header_marker"], template.get("stop_marker", "")
+        )
+        num_cols = len(headers_list)
+        all_rows: list[list[str]] = []
+
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            page_count = len(pdf.pages)
+            _update_progress(5, f"Processing {page_count} page(s)...")
+
+            for i, page in enumerate(pdf.pages):
+                page_num = i + 1
+                percent = 5 + int(85 * page_num / page_count)
+                _update_progress(percent, f"Processing page {page_num}/{page_count}...")
+
+                image_b64 = _render_page_to_base64(page)
+                response = await _call_vision_model(
+                    image_b64, prompt, provider=user_provider, model=user_model
+                )
+                rows = _extract_json_array(response)
+
+                for row in rows:
+                    if len(row) < num_cols:
+                        row.extend([""] * (num_cols - len(row)))
+                    elif len(row) > num_cols:
+                        row = row[:num_cols]
+                    all_rows.append(row)
+
+        _update_progress(92, "Generating XLSX...")
+        _write_xlsx(headers_list, all_rows, str(xlsx_path))
+
+        # Upload XLSX to Supabase Storage
+        _update_progress(95, "Uploading result...")
+        xlsx_storage_path = f"{org_id}/{run_id}.xlsx"
+        xlsx_bytes = xlsx_path.read_bytes()
+        sb.storage.from_("results").upload(
+            xlsx_storage_path,
+            xlsx_bytes,
+            {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        )
+
+        # Mark completed
+        sb.table("agent_task_runs").update(
+            {
+                "status": "completed",
+                "progress_pct": 100,
+                "progress_message": f"Done! Extracted {len(all_rows)} rows from {page_count} page(s).",
+                "row_count": len(all_rows),
+                "page_count": page_count,
+                "file_url": xlsx_storage_path,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ).eq("id", run_id).execute()
+
+        # Delete source PDF from Storage (no longer needed after success)
+        try:
+            sb.storage.from_("results").remove([pdf_storage_path])
+            sb.table("agent_task_runs").update(
+                {"pdf_url": None}
+            ).eq("id", run_id).execute()
+        except Exception:
+            pass
+
+        # Cleanup temp files
+        try:
+            for f in tmp_dir.iterdir():
+                f.unlink()
+            tmp_dir.rmdir()
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.exception("Extraction failed for run %s", run_id)
+        sb.table("agent_task_runs").update(
+            {
+                "status": "failed",
+                "error_message": str(e),
+                "progress_message": f"Error: {e}",
+            }
+        ).eq("id", run_id).execute()
 
 
 @app.post("/api/convert")
@@ -307,7 +455,7 @@ async def convert(
     template_id: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
-    """Start conversion and stream progress via SSE."""
+    """Start conversion as a background task. Returns run_id immediately."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a PDF file.")
 
@@ -327,9 +475,7 @@ async def convert(
         raise HTTPException(status_code=400, detail="Template not found.")
 
     tmpl = tmpl_res.data
-    headers_list = tmpl["headers"]
     pdf_bytes = await file.read()
-    result_id = str(uuid.uuid4())
     xlsx_filename = Path(file.filename).stem + ".xlsx"
 
     # Load user's model preferences
@@ -346,165 +492,78 @@ async def convert(
         user_provider = s.get("llm_provider")
         user_model = s.get("model_name")
 
-    # Create a task run record
+    # Create a task run record (pending)
     run_data = {
         "user_id": user["id"],
         "organization_id": org_id,
         "template_id": template_id,
         "file_name": file.filename,
-        "status": "processing",
+        "status": "pending",
+        "progress_pct": 0,
+        "progress_message": "Uploading PDF...",
     }
     run_res = sb.table("agent_task_runs").insert(run_data).execute()
-    run_id = run_res.data[0]["id"] if run_res.data else None
+    run_id = run_res.data[0]["id"]
 
-    async def event_stream():
-        try:
-            tmp_dir = Path(tempfile.mkdtemp())
-            pdf_path = tmp_dir / file.filename
-            xlsx_path = tmp_dir / xlsx_filename
-            pdf_path.write_bytes(pdf_bytes)
+    # Upload PDF to Supabase Storage (persists across server restarts)
+    pdf_storage_path = f"{org_id}/{run_id}.pdf"
+    sb.storage.from_("results").upload(
+        pdf_storage_path,
+        pdf_bytes,
+        {"content-type": "application/pdf"},
+    )
 
-            yield {
-                "event": "progress",
-                "data": json.dumps(
-                    {
-                        "stage": "starting",
-                        "message": "Starting extraction...",
-                        "percent": 0,
-                    }
-                ),
-            }
+    # Store the PDF path in the run record
+    sb.table("agent_task_runs").update(
+        {"pdf_url": pdf_storage_path, "progress_message": "Queued..."}
+    ).eq("id", run_id).execute()
 
-            from table_extractor.prompt import build_extraction_prompt
-            from table_extractor.tools import (
-                _call_vision_model,
-                _extract_json_array,
-                _render_page_to_base64,
-                _write_xlsx,
-            )
-
-            import pdfplumber
-
-            prompt = build_extraction_prompt(
-                headers_list, tmpl["header_marker"], tmpl.get("stop_marker", "")
-            )
-            num_cols = len(headers_list)
-            all_rows: list[list[str]] = []
-
-            with pdfplumber.open(str(pdf_path)) as pdf:
-                page_count = len(pdf.pages)
-                yield {
-                    "event": "progress",
-                    "data": json.dumps(
-                        {
-                            "stage": "processing",
-                            "message": f"Processing {page_count} page(s)...",
-                            "percent": 5,
-                        }
-                    ),
-                }
-
-                for i, page in enumerate(pdf.pages):
-                    page_num = i + 1
-                    percent = 5 + int(85 * page_num / page_count)
-                    yield {
-                        "event": "progress",
-                        "data": json.dumps(
-                            {
-                                "stage": "processing",
-                                "message": f"Processing page {page_num}/{page_count}...",
-                                "percent": percent,
-                            }
-                        ),
-                    }
-
-                    image_b64 = _render_page_to_base64(page)
-                    response = await _call_vision_model(
-                        image_b64, prompt, provider=user_provider, model=user_model
-                    )
-                    rows = _extract_json_array(response)
-
-                    for row in rows:
-                        if len(row) < num_cols:
-                            row.extend([""] * (num_cols - len(row)))
-                        elif len(row) > num_cols:
-                            row = row[:num_cols]
-                        all_rows.append(row)
-
-            yield {
-                "event": "progress",
-                "data": json.dumps(
-                    {
-                        "stage": "saving",
-                        "message": "Generating XLSX...",
-                        "percent": 92,
-                    }
-                ),
-            }
-            _write_xlsx(headers_list, all_rows, str(xlsx_path))
-
-            _results[result_id] = xlsx_path
-
-            # Update run record
-            if run_id:
-                sb.table("agent_task_runs").update(
-                    {
-                        "status": "completed",
-                        "row_count": len(all_rows),
-                        "page_count": page_count,
-                        "completed_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                ).eq("id", run_id).execute()
-
-            yield {
-                "event": "complete",
-                "data": json.dumps(
-                    {
-                        "message": f"Done! Extracted {len(all_rows)} rows from {page_count} page(s).",
-                        "percent": 100,
-                        "download_url": f"/api/download/{result_id}",
-                        "filename": xlsx_filename,
-                    }
-                ),
-            }
-
-        except Exception as e:
-            if run_id:
-                sb.table("agent_task_runs").update(
-                    {
-                        "status": "failed",
-                        "error_message": str(e),
-                    }
-                ).eq("id", run_id).execute()
-            yield {"event": "error", "data": json.dumps({"message": str(e)})}
-
-    return EventSourceResponse(event_stream())
-
-
-# ---------------------------------------------------------------------------
-# Download
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/download/{result_id}")
-async def download(result_id: str, user: dict = Depends(get_current_user)):
-    path = _results.pop(result_id, None)
-    if not path or not path.exists():
-        raise HTTPException(
-            status_code=404, detail="Download expired or not found."
+    # Spawn background task
+    asyncio.create_task(
+        _run_extraction(
+            run_id=run_id,
+            org_id=org_id,
+            pdf_storage_path=pdf_storage_path,
+            pdf_filename=file.filename,
+            xlsx_filename=xlsx_filename,
+            template=tmpl,
+            user_provider=user_provider,
+            user_model=user_model,
         )
+    )
 
-    xlsx_bytes = path.read_bytes()
-    filename = path.name
+    return {"run_id": run_id}
 
-    try:
-        parent = path.parent
-        for f in parent.iterdir():
-            f.unlink()
-        parent.rmdir()
-    except Exception:
-        pass
 
+# ---------------------------------------------------------------------------
+# Download — from Supabase Storage
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/download/{run_id}")
+async def download(run_id: str, user: dict = Depends(get_current_user)):
+    sb = get_supabase()
+    org_id = _get_user_org_id(sb, user["id"])
+
+    # Verify the run belongs to the user's org
+    res = (
+        sb.table("agent_task_runs")
+        .select("file_url, file_name, status")
+        .eq("id", run_id)
+        .eq("organization_id", org_id)
+        .execute()
+    )
+    if not res.data or len(res.data) == 0:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    run = res.data[0]
+    if run["status"] != "completed" or not run.get("file_url"):
+        raise HTTPException(status_code=404, detail="File not available yet.")
+
+    # Download from Supabase Storage
+    xlsx_bytes = sb.storage.from_("results").download(run["file_url"])
+
+    filename = Path(run["file_name"]).stem + ".xlsx"
     return Response(
         content=xlsx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -535,6 +594,104 @@ async def list_runs(user: dict = Depends(get_current_user)):
         r["template_name"] = tmpl["name"] if tmpl else None
         runs.append(r)
     return runs
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run(run_id: str, user: dict = Depends(get_current_user)):
+    sb = get_supabase()
+    org_id = _get_user_org_id(sb, user["id"])
+    res = (
+        sb.table("agent_task_runs")
+        .select("*, extraction_templates(name)")
+        .eq("id", run_id)
+        .eq("organization_id", org_id)
+        .execute()
+    )
+    if not res.data or len(res.data) == 0:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    r = res.data[0]
+    tmpl = r.pop("extraction_templates", None)
+    r["template_name"] = tmpl["name"] if tmpl else None
+    return r
+
+
+@app.post("/api/runs/{run_id}/retry")
+async def retry_run(run_id: str, user: dict = Depends(get_current_user)):
+    """Retry a failed run using the stored PDF from Supabase Storage."""
+    sb = get_supabase()
+    org_id = _get_user_org_id(sb, user["id"])
+
+    res = (
+        sb.table("agent_task_runs")
+        .select("*, extraction_templates(*)")
+        .eq("id", run_id)
+        .eq("organization_id", org_id)
+        .execute()
+    )
+    if not res.data or len(res.data) == 0:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    run = res.data[0]
+    if run["status"] not in ("failed",):
+        raise HTTPException(status_code=400, detail="Only failed runs can be retried.")
+    if not run.get("pdf_url"):
+        raise HTTPException(status_code=400, detail="Source PDF not available for retry.")
+
+    tmpl = run.get("extraction_templates")
+    if not tmpl:
+        raise HTTPException(status_code=400, detail="Template no longer exists.")
+
+    # Load user's model preferences
+    settings_res = (
+        sb.table("user_settings")
+        .select("*")
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    user_provider = None
+    user_model = None
+    if settings_res.data and len(settings_res.data) > 0:
+        s = settings_res.data[0]
+        user_provider = s.get("llm_provider")
+        user_model = s.get("model_name")
+
+    # Reset run state
+    sb.table("agent_task_runs").update(
+        {
+            "status": "pending",
+            "progress_pct": 0,
+            "progress_message": "Queued for retry...",
+            "error_message": None,
+            "file_url": None,
+            "row_count": None,
+            "page_count": None,
+            "completed_at": None,
+        }
+    ).eq("id", run_id).execute()
+
+    # Delete old XLSX result if it exists
+    xlsx_path = f"{org_id}/{run_id}.xlsx"
+    try:
+        sb.storage.from_("results").remove([xlsx_path])
+    except Exception:
+        pass
+
+    xlsx_filename = Path(run["file_name"]).stem + ".xlsx"
+
+    asyncio.create_task(
+        _run_extraction(
+            run_id=run_id,
+            org_id=org_id,
+            pdf_storage_path=run["pdf_url"],
+            pdf_filename=run["file_name"],
+            xlsx_filename=xlsx_filename,
+            template=tmpl,
+            user_provider=user_provider,
+            user_model=user_model,
+        )
+    )
+
+    return {"run_id": run_id}
 
 
 # ---------------------------------------------------------------------------

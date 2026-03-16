@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@/hooks/use-auth";
+import { useTaskProgress } from "@/hooks/use-task-progress";
 import { apiFetch, apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,7 +20,7 @@ import {
 } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { Upload, FileText, AlertCircle } from "lucide-react";
+import { Upload, FileText, AlertCircle, Download } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface Template {
@@ -28,22 +29,22 @@ interface Template {
   headers: string[];
 }
 
-type Status = "idle" | "uploading" | "processing" | "complete" | "error";
-
 export default function ConvertPage() {
   const { session } = useAuth();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState<Status>("idle");
-  const [progress, setProgress] = useState(0);
-  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [modelStatus, setModelStatus] = useState<{
     ok: boolean;
     message: string;
   } | null>(null);
   const dropRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const task = useTaskProgress(runId);
 
   // Load templates
   useEffect(() => {
@@ -73,9 +74,10 @@ export default function ConvertPage() {
   const handleConvert = async () => {
     if (!file || !selectedTemplate || !session) return;
 
-    setStatus("uploading");
-    setProgress(0);
-    setMessage("Starting extraction...");
+    setSubmitting(true);
+    setError(null);
+    setRunId(null);
+    task.reset();
 
     const form = new FormData();
     form.append("file", file);
@@ -93,68 +95,62 @@ export default function ConvertPage() {
         throw new Error(text || `HTTP ${res.status}`);
       }
 
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("No response stream");
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.percent !== undefined) setProgress(data.percent);
-              if (data.message) setMessage(data.message);
-              if (data.download_url) {
-                setStatus("complete");
-                // Trigger download
-                const link = document.createElement("a");
-                link.href = apiUrl(data.download_url);
-                link.download = data.filename || "result.xlsx";
-                // Add auth header via fetch for download
-                const dlRes = await fetch(apiUrl(data.download_url), {
-                  headers: {
-                    Authorization: `Bearer ${session.access_token}`,
-                  },
-                });
-                const blob = await dlRes.blob();
-                link.href = URL.createObjectURL(blob);
-                document.body.appendChild(link);
-                link.click();
-                link.remove();
-              }
-            } catch {
-              // skip malformed JSON
-            }
-          } else if (line.startsWith("event: error")) {
-            setStatus("error");
-          }
-        }
-      }
-
-      if (status !== "complete" && status !== "error") {
-        setStatus("complete");
-      }
+      const data = await res.json();
+      setRunId(data.run_id);
     } catch (err) {
-      setStatus("error");
-      setMessage(err instanceof Error ? err.message : "Conversion failed");
+      setError(err instanceof Error ? err.message : "Failed to start conversion");
+    } finally {
+      setSubmitting(false);
     }
+  };
+
+  const handleDownload = async () => {
+    if (!runId || !session) return;
+    const res = await fetch(apiUrl(`/api/download/${runId}`), {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    const blob = await res.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = file?.name.replace(/\.pdf$/i, ".xlsx") || "result.xlsx";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
   };
 
   const reset = () => {
     setFile(null);
-    setStatus("idle");
-    setProgress(0);
-    setMessage("");
+    setRunId(null);
+    setError(null);
+    setSubmitting(false);
+    task.reset();
   };
+
+  const isActive = submitting || (runId && task.status !== "completed" && task.status !== "failed");
+  const showProgress = runId !== null || submitting;
+
+  // Derive display status
+  let displayStatus: string;
+  let badgeVariant: "default" | "destructive" | "secondary";
+  if (error || task.status === "failed") {
+    displayStatus = "error";
+    badgeVariant = "destructive";
+  } else if (task.status === "completed") {
+    displayStatus = "complete";
+    badgeVariant = "default";
+  } else if (submitting) {
+    displayStatus = "uploading";
+    badgeVariant = "secondary";
+  } else if (runId) {
+    displayStatus = task.status || "processing";
+    badgeVariant = "secondary";
+  } else {
+    displayStatus = "idle";
+    badgeVariant = "secondary";
+  }
+
+  const displayMessage = error || task.progressMessage || (submitting ? "Uploading..." : "");
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -242,24 +238,19 @@ export default function ConvertPage() {
       </Card>
 
       {/* Progress */}
-      {status !== "idle" && (
+      {showProgress && (
         <Card>
           <CardContent className="pt-6 space-y-3">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-medium">{message}</p>
-              <Badge
-                variant={
-                  status === "complete"
-                    ? "default"
-                    : status === "error"
-                      ? "destructive"
-                      : "secondary"
-                }
-              >
-                {status}
-              </Badge>
+              <p className="text-sm font-medium">{displayMessage}</p>
+              <Badge variant={badgeVariant}>{displayStatus}</Badge>
             </div>
-            <Progress value={progress} />
+            <Progress value={task.progressPct} />
+            {task.status === "completed" && task.rowCount !== null && (
+              <p className="text-sm text-muted-foreground">
+                Extracted {task.rowCount} rows from {task.pageCount} page(s).
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -268,22 +259,21 @@ export default function ConvertPage() {
       <div className="flex gap-3">
         <Button
           onClick={handleConvert}
-          disabled={
-            !file ||
-            !selectedTemplate ||
-            status === "uploading" ||
-            status === "processing"
-          }
+          disabled={!file || !selectedTemplate || !!isActive}
         >
-          {status === "uploading" || status === "processing"
-            ? "Converting..."
-            : "Convert"}
+          {isActive ? "Converting..." : "Convert"}
         </Button>
-        {status === "complete" || status === "error" ? (
-          <Button variant="outline" onClick={reset}>
+        {task.status === "completed" && (
+          <Button variant="outline" onClick={handleDownload}>
+            <Download className="mr-2 h-4 w-4" />
+            Download XLSX
+          </Button>
+        )}
+        {(task.status === "completed" || task.status === "failed" || error) && (
+          <Button variant="ghost" onClick={reset}>
             Convert another
           </Button>
-        ) : null}
+        )}
       </div>
     </div>
   );

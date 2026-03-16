@@ -3,8 +3,8 @@
 import { TemplateForm } from "@/components/template-form";
 import { useAuth } from "@/hooks/use-auth";
 import { apiFetch } from "@/lib/api";
-import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 
 interface Template {
   id: string;
@@ -14,14 +14,15 @@ interface Template {
   stop_marker: string;
 }
 
-export default function EditTemplatePage() {
-  const { id } = useParams<{ id: string }>();
+function EditTemplateContent() {
+  const searchParams = useSearchParams();
+  const id = searchParams.get("id");
   const { session } = useAuth();
   const [template, setTemplate] = useState<Template | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || !id) return;
     apiFetch(`/api/templates/${id}`, session.access_token)
       .then((r) => r.json())
       .then((data) => {
@@ -30,6 +31,10 @@ export default function EditTemplatePage() {
       })
       .catch(() => setLoading(false));
   }, [id, session]);
+
+  if (!id) {
+    return <p className="text-destructive">No template ID provided.</p>;
+  }
 
   if (loading) {
     return <p className="text-muted-foreground">Loading...</p>;
@@ -46,5 +51,13 @@ export default function EditTemplatePage() {
       </h2>
       <TemplateForm template={template} />
     </div>
+  );
+}
+
+export default function EditTemplatePage() {
+  return (
+    <Suspense fallback={<p className="text-muted-foreground">Loading...</p>}>
+      <EditTemplateContent />
+    </Suspense>
   );
 }
