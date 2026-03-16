@@ -7,6 +7,8 @@ import os
 import re
 import sys
 import tempfile
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +20,27 @@ from starlette.requests import Request
 from supabase import create_client
 
 from auth import get_current_user
+
+# ---------------------------------------------------------------------------
+# Simple in-memory rate limiter for conversion endpoint
+# ---------------------------------------------------------------------------
+_rate_limit: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT_MAX = int(os.environ.get("CONVERT_RATE_LIMIT", "10"))  # per window
+RATE_LIMIT_WINDOW = int(os.environ.get("CONVERT_RATE_WINDOW", "3600"))  # seconds
+
+
+def _check_rate_limit(user_id: str):
+    """Raise 429 if user exceeds conversion rate limit."""
+    now = time.time()
+    window_start = now - RATE_LIMIT_WINDOW
+    # Prune old entries
+    _rate_limit[user_id] = [t for t in _rate_limit[user_id] if t > window_start]
+    if len(_rate_limit[user_id]) >= RATE_LIMIT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Max {RATE_LIMIT_MAX} conversions per hour.",
+        )
+    _rate_limit[user_id].append(now)
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +479,7 @@ async def convert(
     user: dict = Depends(get_current_user),
 ):
     """Start conversion as a background task. Returns run_id immediately."""
+    _check_rate_limit(user["id"])
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a PDF file.")
 
@@ -618,6 +642,7 @@ async def get_run(run_id: str, user: dict = Depends(get_current_user)):
 @app.post("/api/runs/{run_id}/retry")
 async def retry_run(run_id: str, user: dict = Depends(get_current_user)):
     """Retry a failed run using the stored PDF from Supabase Storage."""
+    _check_rate_limit(user["id"])
     sb = get_supabase()
     org_id = _get_user_org_id(sb, user["id"])
 
