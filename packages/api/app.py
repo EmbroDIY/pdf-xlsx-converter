@@ -12,6 +12,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+import stripe
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,13 @@ from starlette.requests import Request
 from supabase import create_client
 
 from auth import get_current_user
+
+# ---------------------------------------------------------------------------
+# Stripe setup
+# ---------------------------------------------------------------------------
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+COST_PER_PAGE_CENTS = int(os.environ.get("COST_PER_PAGE_CENTS", "5"))
 
 # ---------------------------------------------------------------------------
 # Simple in-memory rate limiter for conversion endpoint
@@ -430,6 +438,34 @@ async def _run_extraction(
             {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
         )
 
+        # Deduct credits and log usage
+        cost = page_count * COST_PER_PAGE_CENTS
+        provider_name = user_provider or os.environ.get("LLM_PROVIDER", "gemini")
+        model_name = user_model or os.environ.get("GEMINI_MODEL", "unknown")
+
+        # Get user_id from the run record
+        run_record = (
+            sb.table("agent_task_runs")
+            .select("user_id")
+            .eq("id", run_id)
+            .execute()
+        )
+        uid = run_record.data[0]["user_id"] if run_record.data else None
+
+        if uid:
+            _deduct_credits(
+                sb, uid, cost, run_id,
+                f"{page_count} page(s) via {provider_name}/{model_name}"
+            )
+            sb.table("usage_logs").insert({
+                "user_id": uid,
+                "run_id": run_id,
+                "provider": provider_name,
+                "model": model_name,
+                "page_count": page_count,
+                "cost_cents": cost,
+            }).execute()
+
         # Mark completed
         sb.table("agent_task_runs").update(
             {
@@ -485,6 +521,14 @@ async def convert(
 
     sb = get_supabase()
     org_id = _get_user_org_id(sb, user["id"])
+
+    # Check credit balance — require at least 1 page worth
+    balance = _get_balance(sb, user["id"])
+    if balance < COST_PER_PAGE_CENTS:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Insufficient credits. Balance: ${balance / 100:.2f}. Top up to continue.",
+        )
 
     # Load template
     tmpl_res = (
@@ -758,6 +802,220 @@ async def update_settings(
     }
     res = sb.table("user_settings").upsert(data).execute()
     return res.data[0] if res.data else data
+
+
+# ---------------------------------------------------------------------------
+# Billing — credit balance helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_balance(supabase, user_id: str) -> int:
+    """Get user's credit balance in cents."""
+    res = (
+        supabase.table("user_settings")
+        .select("credit_balance")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if res.data and len(res.data) > 0:
+        return res.data[0].get("credit_balance", 0) or 0
+    return 0
+
+
+def _deduct_credits(supabase, user_id: str, amount_cents: int, run_id: str, description: str):
+    """Deduct credits and log the transaction. Returns new balance."""
+    # Atomic update: decrement balance
+    current = _get_balance(supabase, user_id)
+    new_balance = current - amount_cents
+
+    supabase.table("user_settings").update(
+        {"credit_balance": new_balance, "updated_at": datetime.now(timezone.utc).isoformat()}
+    ).eq("user_id", user_id).execute()
+
+    # Log transaction
+    supabase.table("credit_transactions").insert({
+        "user_id": user_id,
+        "type": "usage",
+        "amount_cents": -amount_cents,
+        "balance_after": new_balance,
+        "description": description,
+        "run_id": run_id,
+    }).execute()
+
+    return new_balance
+
+
+def _credit_balance(supabase, user_id: str, amount_cents: int, stripe_session_id: str):
+    """Add credits and log the transaction."""
+    current = _get_balance(supabase, user_id)
+    new_balance = current + amount_cents
+
+    # Ensure user_settings row exists (upsert)
+    supabase.table("user_settings").upsert({
+        "user_id": user_id,
+        "credit_balance": new_balance,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+    supabase.table("credit_transactions").insert({
+        "user_id": user_id,
+        "type": "topup",
+        "amount_cents": amount_cents,
+        "balance_after": new_balance,
+        "description": f"Top-up ${amount_cents / 100:.2f}",
+        "stripe_session_id": stripe_session_id,
+    }).execute()
+
+    return new_balance
+
+
+# ---------------------------------------------------------------------------
+# Billing — Stripe endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/billing/checkout")
+async def create_checkout(request: Request, user: dict = Depends(get_current_user)):
+    """Create a Stripe Checkout session for a $5 credit top-up."""
+    body = await request.json()
+    amount_dollars = body.get("amount", 5)
+    amount_cents = int(amount_dollars * 100)
+
+    if amount_cents < 100:
+        raise HTTPException(status_code=400, detail="Minimum top-up is $1.")
+
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
+    session = stripe.checkout.Session.create(
+        mode="payment",
+        payment_method_types=["card"],
+        line_items=[{
+            "price_data": {
+                "currency": "usd",
+                "unit_amount": amount_cents,
+                "product_data": {
+                    "name": f"PDF Table Extractor — ${amount_dollars} Credit Top-up",
+                    "description": f"Adds ${amount_dollars:.2f} to your conversion balance",
+                },
+            },
+            "quantity": 1,
+        }],
+        metadata={
+            "user_id": user["id"],
+            "amount_cents": str(amount_cents),
+        },
+        success_url=f"{frontend_url}/settings?topup=success&session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{frontend_url}/settings?topup=cancelled",
+    )
+
+    return {"checkout_url": session.url}
+
+
+@app.post("/api/billing/webhook")
+async def stripe_webhook(request: Request):
+    """Handle Stripe webhook events (no auth — verified by signature)."""
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+        except stripe.SignatureVerificationError:
+            raise HTTPException(status_code=400, detail="Invalid signature")
+    else:
+        # Dev mode: parse without signature verification
+        event = json.loads(payload)
+
+    if event.get("type") == "checkout.session.completed":
+        session_data = event["data"]["object"]
+        metadata = session_data.get("metadata", {})
+        user_id = metadata.get("user_id")
+        amount_cents = int(metadata.get("amount_cents", 0))
+        session_id = session_data.get("id", "")
+
+        if user_id and amount_cents > 0:
+            # Check for duplicate: don't credit twice for same session
+            sb = get_supabase()
+            existing = (
+                sb.table("credit_transactions")
+                .select("id")
+                .eq("stripe_session_id", session_id)
+                .execute()
+            )
+            if not existing.data or len(existing.data) == 0:
+                _credit_balance(sb, user_id, amount_cents, session_id)
+                logger.info("Credited %d cents to user %s (session %s)", amount_cents, user_id, session_id)
+
+    return {"received": True}
+
+
+@app.post("/api/billing/confirm")
+async def confirm_checkout(request: Request, user: dict = Depends(get_current_user)):
+    """Verify a Stripe Checkout session and credit balance if paid.
+    Called by the frontend after redirect from Stripe — works without webhooks."""
+    body = await request.json()
+    session_id = body.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Missing session_id")
+
+    # Retrieve session from Stripe
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid session")
+
+    # Verify payment completed and belongs to this user
+    metadata = checkout_session.metadata or {}
+    if checkout_session.payment_status != "paid":
+        return {"credited": False, "reason": "Payment not completed"}
+    if metadata.get("user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Session does not belong to this user")
+
+    amount_cents = int(metadata.get("amount_cents", 0))
+    if amount_cents <= 0:
+        return {"credited": False, "reason": "Invalid amount"}
+
+    # Dedup check — don't credit twice
+    sb = get_supabase()
+    existing = (
+        sb.table("credit_transactions")
+        .select("id")
+        .eq("stripe_session_id", session_id)
+        .execute()
+    )
+    if existing.data and len(existing.data) > 0:
+        balance = _get_balance(sb, user["id"])
+        return {"credited": False, "reason": "Already credited", "balance_cents": balance}
+
+    new_balance = _credit_balance(sb, user["id"], amount_cents, session_id)
+    logger.info("Confirmed and credited %d cents to user %s (session %s)", amount_cents, user["id"], session_id)
+    return {"credited": True, "balance_cents": new_balance}
+
+
+@app.get("/api/billing/balance")
+async def get_balance(user: dict = Depends(get_current_user)):
+    """Get user's current credit balance."""
+    sb = get_supabase()
+    balance = _get_balance(sb, user["id"])
+    return {
+        "balance_cents": balance,
+        "cost_per_page_cents": COST_PER_PAGE_CENTS,
+    }
+
+
+@app.get("/api/billing/transactions")
+async def list_transactions(user: dict = Depends(get_current_user)):
+    """List user's credit transaction history."""
+    sb = get_supabase()
+    res = (
+        sb.table("credit_transactions")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+    return res.data
 
 
 if __name__ == "__main__":

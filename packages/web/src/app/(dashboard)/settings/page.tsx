@@ -20,8 +20,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Eye, Type } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Eye, Type, CreditCard } from "lucide-react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 interface UserSettings {
   llm_provider: string;
@@ -47,8 +48,26 @@ interface ProviderInfo {
   models: ModelInfo[];
 }
 
+interface Transaction {
+  id: string;
+  type: string;
+  amount_cents: number;
+  balance_after: number;
+  description: string;
+  created_at: string;
+}
+
 export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="text-muted-foreground">Loading...</div>}>
+      <SettingsContent />
+    </Suspense>
+  );
+}
+
+function SettingsContent() {
   const { session, user } = useAuth();
+  const searchParams = useSearchParams();
   const [settings, setSettings] = useState<UserSettings>({
     llm_provider: "gemini",
     model_name: null,
@@ -58,6 +77,11 @@ export default function SettingsPage() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [balanceCents, setBalanceCents] = useState<number>(0);
+  const [costPerPage, setCostPerPage] = useState<number>(5);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [topupLoading, setTopupLoading] = useState(false);
+  const [topupMessage, setTopupMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!session) return;
@@ -76,7 +100,79 @@ export default function SettingsPage() {
       .then((r) => r.json())
       .then((data) => setProviders(data.providers || []))
       .catch(() => {});
+
+    apiFetch("/api/billing/balance", session.access_token)
+      .then((r) => r.json())
+      .then((data) => {
+        setBalanceCents(data.balance_cents ?? 0);
+        setCostPerPage(data.cost_per_page_cents ?? 5);
+      })
+      .catch(() => {});
+
+    apiFetch("/api/billing/transactions", session.access_token)
+      .then((r) => r.json())
+      .then((data) => setTransactions(Array.isArray(data) ? data : []))
+      .catch(() => {});
   }, [session]);
+
+  // Handle redirect from Stripe: confirm payment and credit balance
+  useEffect(() => {
+    const topup = searchParams.get("topup");
+    const sessionId = searchParams.get("session_id");
+
+    if (topup === "success" && sessionId && session) {
+      // Confirm the checkout session server-side to credit balance
+      apiFetch("/api/billing/confirm", session.access_token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.credited) {
+            setTopupMessage("Payment successful! Your balance has been updated.");
+            setBalanceCents(data.balance_cents);
+          } else if (data.reason === "Already credited") {
+            setTopupMessage("Payment already processed.");
+            setBalanceCents(data.balance_cents);
+          } else {
+            setTopupMessage("Payment is being processed. Balance will update shortly.");
+          }
+          // Refresh transactions
+          apiFetch("/api/billing/transactions", session.access_token)
+            .then((r) => r.json())
+            .then((data) => setTransactions(Array.isArray(data) ? data : []))
+            .catch(() => {});
+        })
+        .catch(() => {
+          setTopupMessage("Could not verify payment. Please refresh the page.");
+        });
+      setTimeout(() => setTopupMessage(null), 8000);
+    } else if (topup === "cancelled") {
+      setTopupMessage("Payment was cancelled.");
+      setTimeout(() => setTopupMessage(null), 5000);
+    }
+  }, [searchParams, session]);
+
+  const handleTopUp = async (amount: number = 5) => {
+    if (!session) return;
+    setTopupLoading(true);
+    try {
+      const res = await apiFetch("/api/billing/checkout", session.access_token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount }),
+      });
+      const data = await res.json();
+      if (data.checkout_url) {
+        window.location.href = data.checkout_url;
+      }
+    } catch {
+      setTopupMessage("Failed to start checkout. Please try again.");
+    } finally {
+      setTopupLoading(false);
+    }
+  };
 
   const handleModelChange = (value: string) => {
     // value format: "provider:model_id"
@@ -123,6 +219,71 @@ export default function SettingsPage() {
             <span className="text-muted-foreground">Name:</span>{" "}
             {user?.user_metadata?.full_name ?? "—"}
           </p>
+        </CardContent>
+      </Card>
+
+      {/* Billing */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <CreditCard className="h-4 w-4" />
+            Billing
+          </CardTitle>
+          <CardDescription>
+            Conversions cost ${(costPerPage / 100).toFixed(2)} per page processed.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {topupMessage && (
+            <div className={`rounded-md px-3 py-2 text-sm ${
+              topupMessage.includes("successful")
+                ? "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300"
+                : "bg-yellow-50 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-300"
+            }`}>
+              {topupMessage}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-muted-foreground">Current balance</p>
+              <p className={`text-2xl font-bold ${balanceCents <= 0 ? "text-red-500" : ""}`}>
+                ${(balanceCents / 100).toFixed(2)}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                ~{Math.floor(balanceCents / costPerPage)} pages remaining
+              </p>
+            </div>
+            <Button onClick={() => handleTopUp(5)} disabled={topupLoading}>
+              <CreditCard className="mr-2 h-4 w-4" />
+              {topupLoading ? "Redirecting..." : "Add $5.00"}
+            </Button>
+          </div>
+
+          {transactions.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Recent transactions</p>
+              <div className="max-h-48 overflow-auto rounded-md border">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {transactions.slice(0, 10).map((t) => (
+                      <tr key={t.id} className="border-b last:border-0">
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {new Date(t.created_at).toLocaleDateString()}
+                        </td>
+                        <td className="px-3 py-2">{t.description}</td>
+                        <td className={`px-3 py-2 text-right font-medium ${
+                          t.amount_cents >= 0 ? "text-green-600" : "text-red-500"
+                        }`}>
+                          {t.amount_cents >= 0 ? "+" : ""}${(t.amount_cents / 100).toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

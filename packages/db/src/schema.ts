@@ -5,6 +5,7 @@ import {
   timestamp,
   jsonb,
   integer,
+  numeric,
 } from "drizzle-orm/pg-core";
 
 export const organizations = pgTable("organizations", {
@@ -66,6 +67,38 @@ export const userSettings = pgTable("user_settings", {
   ),
   llmProvider: text("llm_provider").default("gemini"),
   modelName: text("model_name"),
+  creditBalance: integer("credit_balance").default(0).notNull(), // in cents
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Tracks all balance changes: top-ups (Stripe) and usage deductions
+export const creditTransactions = pgTable("credit_transactions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .references(() => users.id)
+    .notNull(),
+  type: text("type").notNull(), // "topup" | "usage"
+  amountCents: integer("amount_cents").notNull(), // positive for topup, negative for usage
+  balanceAfter: integer("balance_after").notNull(), // snapshot after this txn
+  description: text("description"),
+  // Stripe reference for top-ups
+  stripeSessionId: text("stripe_session_id"),
+  // Usage reference
+  runId: uuid("run_id").references(() => agentTaskRuns.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Per-request LLM usage log for cost analysis and margin calculation
+export const usageLogs = pgTable("usage_logs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .references(() => users.id)
+    .notNull(),
+  runId: uuid("run_id").references(() => agentTaskRuns.id),
+  provider: text("provider").notNull(), // "gemini" | "ollama"
+  model: text("model").notNull(),
+  pageCount: integer("page_count").notNull(),
+  costCents: integer("cost_cents").notNull(), // what we charge the user
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });

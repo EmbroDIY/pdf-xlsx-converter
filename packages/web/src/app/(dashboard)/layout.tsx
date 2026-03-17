@@ -11,9 +11,10 @@ import {
   LogOut,
   Coffee,
 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 const navItems = [
   { href: "/convert", label: "Convert", icon: FileText },
@@ -30,12 +31,28 @@ export default function DashboardLayout({
   const { user, session, loading, signOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const [balanceCents, setBalanceCents] = useState<number | null>(null);
 
   useEffect(() => {
     if (!loading && !session) {
       router.replace("/login");
     }
   }, [session, loading, router]);
+
+  // Fetch balance
+  useEffect(() => {
+    if (!session) return;
+    const fetchBalance = () => {
+      apiFetch("/api/billing/balance", session.access_token)
+        .then((r) => r.json())
+        .then((data) => setBalanceCents(data.balance_cents ?? 0))
+        .catch(() => {});
+    };
+    fetchBalance();
+    // Refresh balance every 30s
+    const interval = setInterval(fetchBalance, 30000);
+    return () => clearInterval(interval);
+  }, [session]);
 
   if (loading || !session) {
     return (
@@ -71,6 +88,16 @@ export default function DashboardLayout({
         </nav>
         <Separator />
         <div className="p-3 space-y-2">
+          {balanceCents !== null && (
+            <Link href="/settings">
+              <div className="flex items-center justify-between rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors cursor-pointer">
+                <span className="text-muted-foreground">Balance</span>
+                <span className={`font-medium ${balanceCents <= 0 ? "text-red-500" : "text-green-600"}`}>
+                  ${(balanceCents / 100).toFixed(2)}
+                </span>
+              </div>
+            </Link>
+          )}
           {process.env.NEXT_PUBLIC_BUY_ME_A_COFFEE_LINK && (
             <a
               href={process.env.NEXT_PUBLIC_BUY_ME_A_COFFEE_LINK}

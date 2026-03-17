@@ -104,3 +104,17 @@ create policy "Users can upsert own settings"
 create policy "Users can update own settings"
   on public.user_settings for update
   using (user_id = auth.uid());
+
+-- Credit transactions: own records only (read-only for users, writes via service role)
+alter table public.credit_transactions enable row level security;
+
+create policy "Users can view own transactions"
+  on public.credit_transactions for select
+  using (user_id = auth.uid());
+
+-- Usage logs: own records only (read-only for users)
+alter table public.usage_logs enable row level security;
+
+create policy "Users can view own usage"
+  on public.usage_logs for select
+  using (user_id = auth.uid());

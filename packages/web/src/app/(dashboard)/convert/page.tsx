@@ -21,6 +21,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Upload, FileText, AlertCircle, Download } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface Template {
@@ -91,6 +92,10 @@ export default function ConvertPage() {
       });
 
       if (!res.ok) {
+        if (res.status === 402) {
+          setError("Insufficient credits. Please top up your balance in Settings.");
+          return;
+        }
         const text = await res.text();
         throw new Error(text || `HTTP ${res.status}`);
       }
@@ -150,6 +155,7 @@ export default function ConvertPage() {
     badgeVariant = "secondary";
   }
 
+  const isInsufficientCredits = error?.includes("Insufficient credits");
   const displayMessage = error || task.progressMessage || (submitting ? "Uploading..." : "");
 
   return (
@@ -237,8 +243,21 @@ export default function ConvertPage() {
         </CardContent>
       </Card>
 
+      {/* Insufficient credits banner */}
+      {isInsufficientCredits && (
+        <div className="flex items-center justify-between rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4" />
+            {displayMessage}
+          </div>
+          <Link href="/settings">
+            <Button size="sm" variant="outline">Top up</Button>
+          </Link>
+        </div>
+      )}
+
       {/* Progress */}
-      {showProgress && (
+      {showProgress && !isInsufficientCredits && (
         <Card>
           <CardContent className="pt-6 space-y-3">
             <div className="flex items-center justify-between">
