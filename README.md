@@ -1,65 +1,84 @@
-# PDF to XLSX Converter
+# PDF Table Extractor
 
-Convert supplier PDF tables into sortable XLSX spreadsheets. Uses a local AI vision model (Ollama) to read tables from any PDF — scanned or digital.
+Extract table data from any PDF into sortable XLSX spreadsheets. Uses AI vision models (Google Gemini or local Ollama) to read tables from scanned or digital PDFs.
 
-## Windows Setup (one-time)
+## Quick Start
 
-1. **Install Ollama** — download from https://ollama.com and run the installer
-2. **Install Python 3.13+** — download from https://python.org
-   During installation, check **"Add Python to PATH"**
-3. **Install uv** — open Command Prompt and run:
-   ```
-   pip install uv
-   ```
-4. **Download this project** — unzip the folder somewhere (e.g. Desktop)
+### Prerequisites
 
-The app connects to Ollama for AI-powered table extraction.
+- Python 3.13+ with [uv](https://docs.astral.sh/uv/)
+- Node.js 22+
+- A [Supabase](https://supabase.com) project (free tier works)
 
-After that, just double-click **`start.bat`** to run the app. A browser window will open automatically.
+### Setup
+
+```bash
+# Clone and install
+git clone <repo-url> && cd pdf-xlsx-converter
+uv sync
+npm install
+
+# Configure environment
+cp .env.example .env
+# Fill in your Supabase keys, LLM provider config, etc.
+
+# Push database schema
+cd packages/db && npm run db:push && cd ../..
+
+# Apply RLS policies (run seed.sql in Supabase SQL Editor)
+# See packages/db/src/seed.sql
+```
+
+### Run
+
+```bash
+# Terminal 1: FastAPI backend
+uv run python packages/api/app.py
+
+# Terminal 2: Next.js frontend
+cd packages/web && npm run dev
+```
+
+Open http://localhost:3000 in your browser.
 
 ## Usage
 
-1. Double-click **`start.bat`** — the app opens in your browser
-2. Check the green status bar says "Ollama is running and ready"
-3. Select a supplier from the dropdown
-4. Drag & drop the PDF (or click to browse)
-5. Wait for the conversion (may take up to a minute per page)
-6. The XLSX file downloads automatically
+1. Sign in with Google or email/password
+2. Create an extraction template (Templates page) — define the column headers and table markers for your PDF type
+3. Go to Convert, select a template, drag & drop your PDF
+4. Watch the progress bar as each page is processed
+5. The XLSX file downloads automatically when done
 
-To stop the app, close the black terminal window.
+## Docker
 
-## Managing Supplier Profiles
+```bash
+docker build -t pdf-table-extractor \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key \
+  --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000 .
 
-Each supplier's PDF has a different table layout. A **profile** tells the converter what columns to look for.
+docker run -p 8000:8000 -p 3000:3000 --env-file .env pdf-table-extractor
+```
 
-Click **"Manage suppliers"** in the app to create or edit profiles.
+## Environment Variables
 
-### Creating a Profile
-
-Open one of the supplier's PDFs and look at the table:
-
-1. **Supplier name** — the supplier's name (e.g. "Gunnar V. Jorgensen")
-2. **Header marker** — a word from the table's header row (e.g. `Dyrnr.`). The AI uses this to know where the table starts.
-3. **Stop marker** — text that appears right after the table ends (e.g. `Bemærkning`). Leave empty to read until end of page.
-4. **Column headers** — list each column name on its own line, in the same order as the PDF.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `gemini` | `gemini` or `ollama` |
+| `GOOGLE_API_KEY` | — | Required for Gemini |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model name |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `OLLAMA_MODEL` | `qwen3-vl:8b` | Ollama vision model |
+| `SUPABASE_URL` | — | Supabase project URL |
+| `SUPABASE_KEY` | — | Supabase anon key |
+| `SUPABASE_SECRET_KEY` | — | Supabase service role key |
+| `SUPABASE_JWT_SIGNING_KEY` | — | JWT signing key |
+| `DATABASE_URL` | — | PostgreSQL connection string |
+| `PORT` | `8000` | FastAPI server port |
 
 ## System Requirements
 
-- **Windows 10/11** (also works on macOS/Linux)
-- **8 GB RAM minimum** (16 GB recommended)
-- **~5 GB disk space** for the AI model
-- A GPU is helpful but not required — the model runs on CPU too (just slower)
-
-## Developer Notes
-
-```bash
-# Install dependencies
-uv sync
-
-# Run the server (Ollama must be running separately)
-uv run python main.py
-# Opens at http://localhost:8000
-
-# Override the default model via environment variable
-OLLAMA_MODEL=some-model uv run python main.py
-```
+- Python 3.13+
+- Node.js 22+
+- For Ollama: 8 GB RAM minimum, GPU recommended
+- For Gemini: just an API key

@@ -1,0 +1,10 @@
+[build]
+  base = "packages/web"
+  command = "cd ../.. && npm install && cd packages/web && npm run build"
+  publish = "out"
+
+# SPA fallback — all routes serve index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
