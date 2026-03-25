@@ -1,6 +1,6 @@
 "use client";
 
-import { useAuth } from "@/hooks/use-auth";
+import { LandingLayout } from "@/components/landing-layout";
 import { Button } from "@/components/ui/button";
 import {
   FileSpreadsheet,
@@ -8,62 +8,12 @@ import {
   Zap,
   Eye,
   ArrowRight,
-  Coffee,
-  Github,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
-
-const COFFEE_LINK = process.env.NEXT_PUBLIC_BUY_ME_A_COFFEE_LINK;
 
 export default function LandingPage() {
-  const { session, loading } = useAuth();
-  const router = useRouter();
-
-  // Redirect authenticated users straight to the app
-  useEffect(() => {
-    if (!loading && session) {
-      router.replace("/convert");
-    }
-  }, [session, loading, router]);
-
-  if (loading || session) {
-    return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Nav */}
-      <header className="border-b">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-2">
-            <FileSpreadsheet className="h-6 w-6" />
-            <span className="text-lg font-semibold">PDF Table Extractor</span>
-          </div>
-          <div className="flex items-center gap-3">
-            {COFFEE_LINK && (
-              <a href={COFFEE_LINK} target="_blank" rel="noopener noreferrer">
-                <Button variant="ghost" size="sm" className="text-amber-600 hover:text-amber-700">
-                  <Coffee className="mr-1.5 h-4 w-4" />
-                  Buy me a coffee
-                </Button>
-              </a>
-            )}
-            <Link href="/login">
-              <Button variant="ghost" size="sm">Log in</Button>
-            </Link>
-            <Link href="/signup">
-              <Button size="sm">Get started</Button>
-            </Link>
-          </div>
-        </div>
-      </header>
-
+    <LandingLayout>
       {/* Hero */}
       <section className="flex-1 flex items-center">
         <div className="mx-auto max-w-5xl px-6 py-24 text-center">
@@ -97,7 +47,7 @@ export default function LandingPage() {
             </Link>
           </div>
 
-          {/* Inline demo visual */}
+          {/* Flow visual */}
           <div className="mx-auto mt-16 max-w-2xl">
             <div className="rounded-xl border bg-card p-1 shadow-lg">
               <div className="rounded-lg bg-muted/50 p-8">
@@ -166,33 +116,6 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
-
-      {/* Footer */}
-      <footer className="border-t">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-6 text-sm text-muted-foreground">
-          <span>PDF Table Extractor — free & open source</span>
-          <div className="flex items-center gap-4">
-            {COFFEE_LINK && (
-              <a
-                href={COFFEE_LINK}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hover:text-foreground transition-colors"
-              >
-                <Coffee className="h-4 w-4" />
-              </a>
-            )}
-            <a
-              href="https://github.com/EmbroDIY/pdf-xlsx-converter"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-foreground transition-colors"
-            >
-              <Github className="h-4 w-4" />
-            </a>
-          </div>
-        </div>
-      </footer>
-    </div>
+    </LandingLayout>
   );
 }

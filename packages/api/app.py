@@ -123,64 +123,6 @@ def _get_user_org_id(supabase, user_id: str) -> str:
 # Models + Health
 # ---------------------------------------------------------------------------
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-
-
-OLLAMA_CLOUD_MODELS = [
-    {"id": "qwen3-vl:235b-cloud", "name": "Qwen3 VL 235B", "provider": "ollama", "vision": True},
-    {"id": "deepseek-v3.1:671b-cloud", "name": "DeepSeek V3.1 671B", "provider": "ollama", "vision": False},
-    {"id": "qwen3-coder:480b-cloud", "name": "Qwen3 Coder 480B", "provider": "ollama", "vision": False},
-    {"id": "gpt-oss:120b-cloud", "name": "GPT-OSS 120B", "provider": "ollama", "vision": False},
-    {"id": "gpt-oss:20b-cloud", "name": "GPT-OSS 20B", "provider": "ollama", "vision": False},
-    {"id": "minimax-m2:cloud", "name": "MiniMax M2", "provider": "ollama", "vision": False},
-    {"id": "glm-4.6:cloud", "name": "GLM 4.6", "provider": "ollama", "vision": False},
-]
-
-
-async def _list_ollama_models() -> list[dict]:
-    """List models available from the connected Ollama instance."""
-    import httpx
-
-    results = []
-    # Fetch locally pulled models
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{OLLAMA_HOST}/api/tags")
-            resp.raise_for_status()
-            models = resp.json().get("models", [])
-            for m in models:
-                # Check vision capability from model families
-                families = m.get("details", {}).get("families", []) or []
-                vision = any(
-                    f in families for f in ("clip", "llava", "mllama")
-                )
-                # Also detect by model name patterns
-                if not vision:
-                    name_lower = m["name"].lower()
-                    vision = any(
-                        tag in name_lower
-                        for tag in ("vision", "-vl", "llava", "bakllava", "moondream")
-                    )
-                results.append(
-                    {
-                        "id": m["name"],
-                        "name": m["name"],
-                        "provider": "ollama",
-                        "vision": vision,
-                    }
-                )
-    except Exception:
-        pass
-
-    # Add cloud models that aren't already listed locally
-    local_ids = {r["id"] for r in results}
-    for cm in OLLAMA_CLOUD_MODELS:
-        if cm["id"] not in local_ids:
-            results.append(cm)
-
-    return results
-
-
 async def _list_gemini_models() -> list[dict]:
     """List Gemini models available via Google AI."""
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -223,14 +165,11 @@ async def _list_gemini_models() -> list[dict]:
 @app.get("/api/models")
 async def list_models(user: dict = Depends(get_current_user)):
     """List available models from all connected providers."""
-    ollama_models = await _list_ollama_models()
     gemini_models = await _list_gemini_models()
 
     providers = []
     if gemini_models:
         providers.append({"name": "gemini", "label": "Google Gemini", "models": gemini_models})
-    if ollama_models:
-        providers.append({"name": "ollama", "label": "Ollama", "models": ollama_models})
 
     return {"providers": providers}
 
@@ -238,14 +177,11 @@ async def list_models(user: dict = Depends(get_current_user)):
 @app.get("/api/health/model")
 async def model_health():
     """Check which providers are reachable."""
-    ollama_models = await _list_ollama_models()
     gemini_models = await _list_gemini_models()
 
     providers = []
     if gemini_models:
         providers.append({"name": "gemini", "ok": True, "model_count": len(gemini_models)})
-    if ollama_models:
-        providers.append({"name": "ollama", "ok": True, "model_count": len(ollama_models)})
 
     if not providers:
         return {"ok": False, "message": "No model providers available", "providers": []}
