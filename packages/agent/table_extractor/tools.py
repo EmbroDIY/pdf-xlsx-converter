@@ -1,4 +1,4 @@
-"""ADK tools for PDF table extraction and XLSX generation."""
+"""Tools for PDF table extraction and XLSX generation."""
 
 import base64
 import io
@@ -6,20 +6,11 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
-
-import httpx
 import pdfplumber
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-from table_extractor.prompt import build_extraction_prompt
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-
-# Defaults from env — can be overridden per-request
-DEFAULT_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini")
-DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-vl:8b")
 DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 
@@ -34,31 +25,8 @@ async def _call_vision_model(
     provider: str | None = None,
     model: str | None = None,
 ) -> str:
-    """Call the vision model. Provider/model can be overridden per-request."""
-    provider = provider or DEFAULT_PROVIDER
-    if provider == "ollama":
-        return await _call_ollama(image_b64, prompt, model or DEFAULT_OLLAMA_MODEL)
+    """Call the vision model. Model can be overridden per-request."""
     return await _call_gemini(image_b64, prompt, model or DEFAULT_GEMINI_MODEL)
-
-
-async def _call_ollama(image_b64: str, prompt: str, model: str) -> str:
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        resp = await client.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                        "images": [image_b64],
-                    }
-                ],
-                "stream": False,
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()["message"]["content"]
 
 
 async def _call_gemini(image_b64: str, prompt: str, model: str) -> str:
@@ -179,62 +147,3 @@ def _write_xlsx(
     return output_path
 
 
-# ---------------------------------------------------------------------------
-# ADK Function Tools
-# ---------------------------------------------------------------------------
-
-async def extract_table_from_pdf(
-    pdf_path: str,
-    headers: list[str],
-    header_marker: str,
-    stop_marker: str = "",
-) -> dict[str, Any]:
-    """Extract table rows from a PDF document using a vision model.
-
-    Args:
-        pdf_path: Path to the PDF file on disk.
-        headers: Ordered list of column names to extract.
-        header_marker: Text that marks the start of the table.
-        stop_marker: Text that marks the end of the table (optional).
-
-    Returns:
-        Dictionary with 'rows' (list of row arrays) and 'page_count'.
-    """
-    prompt = build_extraction_prompt(headers, header_marker, stop_marker)
-    num_cols = len(headers)
-    all_rows: list[list[str]] = []
-
-    with pdfplumber.open(pdf_path) as pdf:
-        page_count = len(pdf.pages)
-        for page in pdf.pages:
-            image_b64 = _render_page_to_base64(page)
-            response = await _call_vision_model(image_b64, prompt)
-            rows = _extract_json_array(response)
-
-            for row in rows:
-                if len(row) < num_cols:
-                    row.extend([""] * (num_cols - len(row)))
-                elif len(row) > num_cols:
-                    row = row[:num_cols]
-                all_rows.append(row)
-
-    return {"rows": all_rows, "page_count": page_count}
-
-
-def save_to_xlsx(
-    rows: list[list[str]],
-    headers: list[str],
-    output_path: str,
-) -> dict[str, Any]:
-    """Save extracted table rows to an XLSX file.
-
-    Args:
-        rows: List of row arrays (each row is a list of string cell values).
-        headers: Column header names.
-        output_path: File path to write the XLSX to.
-
-    Returns:
-        Dictionary with 'output_path' and 'row_count'.
-    """
-    _write_xlsx(headers, rows, output_path)
-    return {"output_path": output_path, "row_count": len(rows)}
